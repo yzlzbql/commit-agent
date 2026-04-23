@@ -1,0 +1,10 @@
+.env
+.agent/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+tests/
+eval_runs/
+docs/
+.codex

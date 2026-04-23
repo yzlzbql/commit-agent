@@ -1,0 +1,7 @@
+分类下面这个 commit。
+
+[REPOSITORY_PATH]
+/data5/taozh/cloned_repos/dosfstools__dosfstools
+
+[COMMIT]
+1b7d91e4e4c42b22710602e1547a6b3200eaa403

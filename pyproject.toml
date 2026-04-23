@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "minimal-agent-cli"
+version = "0.1.0"
+description = "Minimal end-to-end ReAct agent CLI example"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.12,<1",
+  "pydantic>=2.8,<3",
+  "rich>=13.7,<14",
+  "python-dotenv>=1.0,<2",
+  "openai>=2.26,<3",
+  "requests>=2.32,<3",
+  "chromadb>=0.5,<1",
+  "lsprotocol>=2023.0.1,<2024",
+  "unidiff>=0.7,<1",
+]
+
+[project.scripts]
+agent = "minimal_agent.main:app"
+
+[tool.setuptools.packages.find]
+include = ["minimal_agent*"]
