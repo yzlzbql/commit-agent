@@ -1,6 +1,6 @@
-# minimal-agent-cli
+# commit-agent
 
-这是一个基于 `minimal_agent` 的本地 agent harness，用于运行 `commit` 分类任务和批量评测分类效果。
+这是一个 agent harness，其中 `commit_eval` 用于运行 `commit 分类` 任务，并支持批量评测该类别任务的效果。
 
 ## 快速开始
 
