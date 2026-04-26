@@ -15,7 +15,7 @@ dependencies = [
   "python-dotenv>=1.0,<2",
   "openai>=2.26,<3",
   "requests>=2.32,<3",
-  "chromadb>=0.5,<1",
+  "chromadb>=1.5,<2",
   "lsprotocol>=2023.0.1,<2024",
   "unidiff>=0.7,<1",
 ]

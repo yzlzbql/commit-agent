@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import math
+import os
 from pathlib import Path
 import re
 from typing import Any
@@ -17,7 +18,7 @@ from ..types import ToolCtx, ToolResult, ToolSpec
 
 _TOKEN_SPLIT = re.compile(r"[^a-zA-Z0-9_/]+")
 _SILICONFLOW_URL = "https://api.siliconflow.cn/v1/embeddings"
-_SILICONFLOW_TOKEN = "sk-zdbsratuxupbmauuejdywxnfwpskdzdekiehtkefbinheqgx"
+_CHROMA_STORAGE_PATH = ".cache/chroma_db"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,10 +30,10 @@ class _BackendConfig:
 _RAW_BACKEND = _BackendConfig(
     corpus="raw",
     DEFAULT_CONFIG={
-        "chroma_storage_path": "/data2/opencode/examples/minimal-agent-cli/.cache/chroma_db",
+        "chroma_storage_path": _CHROMA_STORAGE_PATH,
         "collection_name": "commit_patch_cci",
         "siliconflow_url": _SILICONFLOW_URL,
-        "siliconflow_token": _SILICONFLOW_TOKEN,
+        "siliconflow_token": "",
         "embedding_model": "Qwen/Qwen3-Embedding-4B",
         "embedding_dim": 1024,
         "llm_model": "deepseek-chat",
@@ -45,10 +46,10 @@ _RAW_BACKEND = _BackendConfig(
 _SUMMARY_BACKEND = _BackendConfig(
     corpus="summary",
     DEFAULT_CONFIG={
-        "chroma_storage_path": "/data2/opencode/examples/minimal-agent-cli/.cache/chroma_db",
+        "chroma_storage_path": _CHROMA_STORAGE_PATH,
         "collection_name": "commit_cci_embeddings",
         "siliconflow_url": _SILICONFLOW_URL,
-        "siliconflow_token": _SILICONFLOW_TOKEN,
+        "siliconflow_token": "",
         "embedding_model": "Qwen/Qwen3-Embedding-4B",
         "embedding_dim": 1024,
         "llm_model": "deepseek-chat",
@@ -89,6 +90,7 @@ def spec() -> ToolSpec:
 def run(ctx: ToolCtx, args: RAGArgs) -> ToolResult:
     corpus = _normalize_corpus(args.corpus)
     backend = _load_backend(corpus)
+    storage_path = _resolve_storage_path(ctx.project.root, backend)
     collection_name = (args.collection_name or "").strip() or str(backend.DEFAULT_CONFIG["collection_name"])
     top_k = args.top_k
     recall_k = max(args.recall_k, top_k)
@@ -102,6 +104,7 @@ def run(ctx: ToolCtx, args: RAGArgs) -> ToolResult:
     if has_commit:
         commit_data = _sanitize_value(dict(args.commit_data or {}))
         result = _retrieve_commit(
+            storage_path=storage_path,
             backend=backend,
             commit_data=commit_data,
             collection_name=collection_name,
@@ -147,6 +150,7 @@ def run(ctx: ToolCtx, args: RAGArgs) -> ToolResult:
     summary_path = output_path.with_name(f"{output_path.stem}_summary.json")
 
     summary = _run_batch(
+        storage_path=storage_path,
         backend=backend,
         query_path=query_path,
         output_path=output_path,
@@ -215,6 +219,48 @@ def _load_backend(corpus: str) -> Any:
     return _SUMMARY_BACKEND if corpus == "summary" else _RAW_BACKEND
 
 
+def _resolve_storage_path(project_root: Path, backend: _BackendConfig) -> Path:
+    raw = Path(str(backend.DEFAULT_CONFIG["chroma_storage_path"]))
+    if raw.is_absolute():
+        return raw
+    return (project_root / raw).resolve()
+
+
+def _env_value(*names: str) -> str:
+    for name in names:
+        value = os.getenv(name)
+        if value and value.strip():
+            return value.strip()
+    return ""
+
+
+def _env_int(*names: str) -> int | None:
+    raw = _env_value(*names)
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as err:
+        joined = "/".join(names)
+        raise ValueError(f"E_INPUT_INVALID: {joined} must be an integer") from err
+
+
+def _embedding_model(backend: _BackendConfig, override: str | None = None) -> str:
+    return (
+        override
+        or _env_value("RAG_EMBEDDING_MODEL", "EMBEDDING_MODEL")
+        or str(backend.DEFAULT_CONFIG["embedding_model"])
+    ).strip()
+
+
+def _embedding_dim(backend: _BackendConfig, override: int | None = None) -> int:
+    if override is not None:
+        return int(override)
+    return _env_int("RAG_EMBEDDING_DIM", "EMBEDDING_DIM") or int(
+        backend.DEFAULT_CONFIG["embedding_dim"]
+    )
+
+
 def _get_embeddings(
     texts: list[str],
     *,
@@ -224,12 +270,19 @@ def _get_embeddings(
     dimensions: int | None = None,
 ) -> list[list[float] | None]:
     config = backend.DEFAULT_CONFIG
-    token = api_key or str(config["siliconflow_token"])
+    token = (
+        api_key
+        or _env_value("SILICONFLOW_API_KEY", "EMBEDDING_API_KEY")
+        or str(config["siliconflow_token"]).strip()
+    )
     if not token:
-        raise RuntimeError("E_RAG_EMBEDDING_FAILED: siliconflow token is not configured")
+        raise RuntimeError("E_RAG_EMBEDDING_FAILED: set SILICONFLOW_API_KEY in .env")
 
-    payload_model = model or str(config["embedding_model"])
-    payload_dimensions = int(dimensions if dimensions is not None else config["embedding_dim"])
+    payload_model = _embedding_model(backend, model)
+    payload_dimensions = _embedding_dim(backend, dimensions)
+    url = _env_value("SILICONFLOW_EMBEDDING_URL", "RAG_EMBEDDING_URL") or str(
+        config["siliconflow_url"]
+    )
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -245,7 +298,7 @@ def _get_embeddings(
         }
         try:
             response = requests.post(
-                str(config["siliconflow_url"]),
+                url,
                 json=payload,
                 headers=headers,
                 timeout=60,
@@ -265,6 +318,7 @@ def _get_embeddings(
 
 def _run_batch(
     *,
+    storage_path: Path,
     backend: Any,
     query_path: Path,
     output_path: Path,
@@ -293,6 +347,7 @@ def _run_batch(
 
             commit_data = _commit_data_from_query_item(item, line_no=line_no)
             result = _retrieve_commit(
+                storage_path=storage_path,
                 backend=backend,
                 commit_data=commit_data,
                 collection_name=collection_name,
@@ -366,9 +421,9 @@ def _run_batch(
             "classification": classification_eval,
         },
         "configuration": {
-            "chroma_storage_path": str(backend.DEFAULT_CONFIG["chroma_storage_path"]),
-            "embedding_model": str(backend.DEFAULT_CONFIG["embedding_model"]),
-            "embedding_dim": int(backend.DEFAULT_CONFIG["embedding_dim"]),
+            "chroma_storage_path": str(storage_path),
+            "embedding_model": _embedding_model(backend),
+            "embedding_dim": _embedding_dim(backend),
             "llm_model": str(backend.DEFAULT_CONFIG.get("llm_model", "")),
             "retrieval": {
                 "top_k": top_k,
@@ -384,6 +439,7 @@ def _run_batch(
 
 def _retrieve_commit(
     *,
+    storage_path: Path,
     backend: Any,
     commit_data: dict[str, Any],
     collection_name: str,
@@ -401,12 +457,11 @@ def _retrieve_commit(
     query_embedding = _get_embeddings(
         [query_text],
         backend=backend,
-        dimensions=int(backend.DEFAULT_CONFIG["embedding_dim"]),
     )[0]
     if query_embedding is None:
         raise RuntimeError("E_RAG_EMBEDDING_FAILED: failed to generate embedding for query commit")
 
-    client = chromadb.PersistentClient(path=str(backend.DEFAULT_CONFIG["chroma_storage_path"]))
+    client = chromadb.PersistentClient(path=str(storage_path))
     try:
         collection = client.get_collection(collection_name)
     except Exception as err:
